@@ -1,0 +1,287 @@
+---
+title: "COVID-19 Dataset Analysis: Case Fatality Rates and Regional Trends"
+author: "Kelvin Khuu"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Question of Interest
+
+**How do case fatality rates (CFR) differ across regions over time, and can we predict mortality rates based on cumulative cases?**
+
+This analysis examines COVID-19 data from multiple countries to understand the relationship between infection rates and mortality, identify temporal trends in case fatality rates, and explore whether early case numbers can predict later mortality patterns.
+
+## Description of Data
+
+The dataset originates from the Johns Hopkins University Center for Systems Science and Engineering (CSSE) COVID-19 Data Repository. This repository contains daily time series data tracking confirmed cases and deaths globally from January 22, 2020, through March 10, 2023, when collection ceased.
+
+**Data Source:** https://github.com/CSSEGISandData/COVID-19
+
+The dataset includes:
+- Daily cumulative confirmed cases by country/region
+- Daily cumulative deaths by country/region
+- Geographic information (Province/State and Country/Region)
+- Time series data spanning over three years of the pandemic
+
+## Import Libraries
+
+```{r libraries}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(scales)
+library(broom)
+```
+
+## Import the Data
+
+```{r import_urls}
+# GitHub repository base URL
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+# CSV file names
+file_names <- c("time_series_covid19_confirmed_global.csv", 
+                "time_series_covid19_deaths_global.csv")
+
+# Concatenate to create full URLs
+urls <- str_c(url_in, file_names)
+
+# Read in the data
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+```
+
+```{r preview_data}
+# Preview the structure of raw data
+head(global_cases, 3)
+head(global_deaths, 3)
+```
+
+## Tidy and Transform Data
+
+```{r tidy_data}
+# Transform cases data from wide to long format
+covid_cases <- global_cases %>%
+  pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "cumulative_cases") %>%
+  select(-Lat, -Long) %>%
+  mutate(date = mdy(date)) %>%
+  rename(State = `Province/State`, Country = `Country/Region`)
+
+# Transform deaths data from wide to long format
+covid_deaths <- global_deaths %>%
+  pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "cumulative_deaths") %>%
+  select(-Lat, -Long) %>%
+  mutate(date = mdy(date)) %>%
+  rename(State = `Province/State`, Country = `Country/Region`)
+
+# Merge cases and deaths
+covid_data <- covid_cases %>%
+  left_join(covid_deaths, by = c("State", "Country", "date"))
+
+# Aggregate by country (sum all provinces/states)
+covid_country <- covid_data %>%
+  group_by(Country, date) %>%
+  summarise(
+    total_cases = sum(cumulative_cases, na.rm = TRUE),
+    total_deaths = sum(cumulative_deaths, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    case_fatality_rate = ifelse(total_cases > 0, 
+                                  (total_deaths / total_cases) * 100, 
+                                  0)
+  )
+
+head(covid_country)
+```
+
+## Select Countries for Analysis
+
+```{r select_countries}
+# Select diverse countries with substantial case numbers
+countries_of_interest <- c("US", "Brazil", "India", "United Kingdom", "Japan")
+
+covid_selected <- covid_country %>%
+  filter(Country %in% countries_of_interest)
+
+# Calculate new daily cases and deaths
+covid_selected <- covid_selected %>%
+  group_by(Country) %>%
+  arrange(date) %>%
+  mutate(
+    new_cases = total_cases - lag(total_cases, default = 0),
+    new_deaths = total_deaths - lag(total_deaths, default = 0)
+  ) %>%
+  ungroup()
+
+summary(covid_selected)
+```
+
+## Visualization 1: Case Fatality Rate Over Time
+
+```{r viz_cfr_time, fig.width=10, fig.height=6}
+ggplot(covid_selected, aes(x = date, y = case_fatality_rate, color = Country)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "COVID-19 Case Fatality Rate Over Time by Country",
+    subtitle = "Percentage of confirmed cases resulting in death",
+    x = "Date",
+    y = "Case Fatality Rate (%)",
+    color = "Country"
+  ) +
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.1)) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+**Interpretation:** This visualization shows how case fatality rates evolved differently across countries. Early in the pandemic, CFR was highly volatile due to limited testing. As testing expanded and treatments improved, CFR generally declined. Notable differences between countries likely reflect healthcare system capacity, demographic factors, and reporting accuracy.
+
+## Visualization 2: Total Deaths vs Total Cases (Log Scale)
+
+```{r viz_deaths_cases, fig.width=10, fig.height=6}
+# Get the latest data point for each country
+covid_latest <- covid_selected %>%
+  group_by(Country) %>%
+  filter(date == max(date)) %>%
+  ungroup()
+
+ggplot(covid_latest, aes(x = total_cases, y = total_deaths, color = Country)) +
+  geom_point(size = 5, alpha = 0.7) +
+  geom_text(aes(label = Country), vjust = -1, size = 3.5) +
+  scale_x_log10(labels = scales::comma) +
+  scale_y_log10(labels = scales::comma) +
+  labs(
+    title = "Total COVID-19 Deaths vs. Total Cases by Country",
+    subtitle = "Final cumulative totals (log scale)",
+    x = "Total Confirmed Cases (log scale)",
+    y = "Total Deaths (log scale)",
+    color = "Country"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "none"
+  )
+```
+
+**Interpretation:** On a logarithmic scale, countries falling on similar diagonal lines have comparable case fatality rates. Countries above the line experienced higher mortality relative to cases, while those below had lower mortality rates. This can reflect differences in healthcare quality, age demographics, testing availability, and reporting practices.
+
+## Visualization 3: Daily New Cases and Deaths Comparison
+
+```{r viz_daily_trends, fig.width=10, fig.height=8}
+# Calculate 7-day rolling averages to smooth data
+covid_selected_smooth <- covid_selected %>%
+  group_by(Country) %>%
+  arrange(date) %>%
+  mutate(
+    cases_7day_avg = zoo::rollmean(new_cases, k = 7, fill = NA, align = "right"),
+    deaths_7day_avg = zoo::rollmean(new_deaths, k = 7, fill = NA, align = "right")
+  ) %>%
+  ungroup()
+
+# Focus on one country for detailed view
+us_data <- covid_selected_smooth %>%
+  filter(Country == "US", date >= as.Date("2020-03-01"))
+
+ggplot(us_data, aes(x = date)) +
+  geom_line(aes(y = cases_7day_avg, color = "New Cases (7-day avg)"), linewidth = 1) +
+  geom_line(aes(y = deaths_7day_avg * 100, color = "New Deaths (7-day avg × 100)"), linewidth = 1) +
+  labs(
+    title = "Daily New COVID-19 Cases and Deaths in the United States",
+    subtitle = "Deaths scaled by 100x for comparison (7-day rolling average)",
+    x = "Date",
+    y = "Count",
+    color = "Metric"
+  ) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_color_manual(values = c("New Cases (7-day avg)" = "steelblue", 
+                                 "New Deaths (7-day avg × 100)" = "darkred")) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+**Interpretation:** This visualization shows the relationship between case waves and death waves in the US. Deaths typically lag cases by 2-3 weeks. Over time, the gap between case peaks and death peaks widened, suggesting improved treatments and vaccination effects.
+
+## Statistical Model: Predicting Case Fatality Rate
+
+```{r model_cfr}
+# Prepare data for modeling (filter to later period with more stable testing)
+model_data <- covid_selected %>%
+  filter(date >= as.Date("2021-01-01"), total_cases >= 1000) %>%
+  mutate(
+    log_cases = log10(total_cases + 1),
+    log_deaths = log10(total_deaths + 1)
+  )
+
+# Linear model: log(deaths) as a function of log(cases) and country
+cfr_model <- lm(log_deaths ~ log_cases + Country, data = model_data)
+
+summary(cfr_model)
+
+# Extract model coefficients
+tidy(cfr_model) %>%
+  knitr::kable(digits = 4, caption = "Model Coefficients: Predicting Log Deaths")
+```
+
+**Model Interpretation:**
+
+The model shows that deaths scale almost 1:1 with cases (coefficient near 1.0 on log scale), which makes sense. More infections generally mean more deaths. What's interesting is that even after accounting for case numbers, countries still show meaningful differences in mortality rates. The R-squared tells us how well case counts and country specific factors explain death tolls, while the p-values indicate which country differences are actually significant versus just random variation.
+
+## Analysis: Peak Case Fatality Rates by Country
+
+```{r analysis_peaks}
+# Find peak CFR for each country
+peak_cfr <- covid_selected %>%
+  filter(total_cases >= 10000) %>%  # Only consider after substantial spread
+  group_by(Country) %>%
+  summarise(
+    max_cfr = max(case_fatality_rate, na.rm = TRUE),
+    date_of_max = date[which.max(case_fatality_rate)],
+    final_cfr = last(case_fatality_rate),
+    total_cases_final = last(total_cases),
+    total_deaths_final = last(total_deaths)
+  ) %>%
+  arrange(desc(max_cfr))
+
+knitr::kable(peak_cfr, 
+             digits = 2,
+             caption = "Peak and Final Case Fatality Rates by Country",
+             col.names = c("Country", "Peak CFR (%)", "Date of Peak", 
+                          "Final CFR (%)", "Total Cases", "Total Deaths"))
+```
+
+**Analysis Findings:**
+
+Looking at the peak CFR data, there's a clear pattern. Countries that hit their highest fatality rates early in 2020 were dealing with overwhelmed hospitals and limited testing. When you're only testing the sickest patients, your death rate looks artificially high. As testing became more available and doctors figured out better treatment protocols, those rates dropped pretty dramatically across the board.
+
+## Potential Sources of Bias
+
+This data isn't perfect, and there are several issues worth mentioning:
+
+**Testing availability** varied wildly between countries. Nations with limited testing only caught severe cases, making their death rates look worse than they actually were. Meanwhile, countries doing widespread testing detected mild cases too, which brought their rates down.
+
+**Reporting standards** weren't consistent. Some countries counted anyone who died with COVID, others only counted deaths directly caused by COVID. There's also the uncomfortable reality that some governments had political reasons to under report.
+
+**Demographics matter**  a country with an older population will naturally see more deaths. We didn't adjust for age here, which is a limitation.
+
+**Healthcare capacity** plays a huge role. More ICU beds, faster vaccine rollout, and better medical infrastructure all reduce mortality independently of how many cases you have.
+
+Finally, we only looked at five countries, and they're all relatively wealthy nations with decent data collection. This doesn't tell us much about what happened in places with less robust reporting systems.
+
+## Conclusion
+
+It's fascinating to look back at the COVID-19 data from 2020 through 2023. What really jumps out is how the Case Fatality Rate (CFR) plummeted as the pandemic wore on, and just how much mortality varied from one country to the next. That huge drop in death rates was clearly a win for vaccinations, better medical treatments, and catching milder cases through wider testing the virus definitely got less deadly even as it kept surging in waves. The big lesson here is that places with solid healthcare systems and smart public health plans had noticeably better outcomes. Sure, we have to admit the data isn't perfect; reporting and testing weren't standardized across the globe. But despite those inconsistencies, the main conclusion holds: good public health measures really do make a measurable difference when it matters most.
