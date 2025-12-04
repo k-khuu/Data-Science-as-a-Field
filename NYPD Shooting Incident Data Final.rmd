@@ -1,0 +1,81 @@
+---
+title: "NYPD Shooting Incident Data Report"
+output:
+  html_document: default
+---
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(nnet)
+options(warn = -1)
+```
+```{r load_data}
+# Load dataset
+url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+NYPD <- read.csv(url, stringsAsFactors = FALSE)
+```
+```{r parse_data}
+# Parse date and extract time features
+NYPD$occur_date <- mdy(NYPD$OCCUR_DATE)
+NYPD$hour <- hour(hms(NYPD$OCCUR_TIME))
+NYPD$weekday <- wday(NYPD$occur_date, label = TRUE)
+
+# Display the structure
+str(NYPD)
+```
+```{r clean_data}
+# Tidying and Transforming Data
+# Filter valid boroughs and dates
+NYPD <- subset(NYPD, !is.na(OCCUR_DATE) & BORO != "")
+
+# Create factor for borough
+NYPD$borough <- factor(NYPD$BORO)
+```
+```{r viz_hourly}
+# Visualization 1: Shootings by Hour of Day
+hourly_counts <- table(NYPD$hour)
+barplot(hourly_counts,
+        col = "darkorange",
+        main = "Shootings by Hour of Day",
+        xlab = "Hour", ylab = "Number of Incidents")
+```
+```{r viz_weekday}
+# Visualization 2: Shootings by Weekday
+weekday_counts <- table(NYPD$weekday)
+barplot(weekday_counts,
+        col = "darkblue",
+        main = "Shootings by Day of Week",
+        xlab = "Weekday", ylab = "Number of Incidents")
+```
+```{r modeling}
+# Modeling Data - Predicting Borough from Time Features
+model_data <- NYPD[complete.cases(NYPD[c("borough", "hour", "weekday")]), ]
+model_data$weekday <- as.factor(model_data$weekday)
+
+# Fit model
+borough_model <- multinom(borough ~ hour + weekday, data = model_data)
+
+# Summary
+summary(borough_model)
+```
+```{r plot_coefficients}
+# Visualize the coefficients
+library(sjPlot)
+suppressWarnings(
+  suppressMessages(
+    plot_model(borough_model, type = "std", ci_method = "wald")
+  )
+)
+```
+
+```{r bias_analysis}
+# Bias - Are some boroughs disproportionately represented?
+round(prop.table(table(NYPD$BORO)) * 100, 1)
+```
+
+## Conclusion
+
+This analysis highlights clear patterns in when and where NYPD shooting incidents occur, with certain hours and boroughs showing elevated risk. By extracting time-based features and modeling borough likelihood, we demonstrated how public data can reveal actionable insights with minimal preprocessing.
+
+While the dataset was structurally clean, disparities in incident distribution suggest deeper systemic factors worth exploring. Future work could layer in geospatial clustering or socioeconomic data to build a more complete picture of urban risk. Overall, the project shows how reproducible R workflows and thoughtful framing can turn raw incident logs into meaningful, bias-aware analysis.
